@@ -256,6 +256,7 @@ class Scratch3Physics {
          * @type {Runtime}
          */
         this.runtime = runtime;
+        this.activeTargetCollisions = new Set(); // e.g. "spriteA|spriteB"
 
         // Clear target motion state values when the project starts.
         this.runtime.on(Runtime.PROJECT_START, this.reset.bind(this));
@@ -264,8 +265,8 @@ class Scratch3Physics {
             new b2Vec2(0, 0), // gravity (0)
             true // allow sleep
         );
-        const contactListener = new MyContactListener();
-        world.SetContactListener(contactListener);
+        this.contactListener = new MyContactListener(runtime);
+        world.SetContactListener(this.contactListener);
         const b2ContactFilter = new MyContactFilter();
         world.SetContactFilter(b2ContactFilter);
         this.runtime.stepPhysics = this.doTick.bind(this);
@@ -323,6 +324,20 @@ class Scratch3Physics {
             menuIconURI: menuIconURI,
             blockIconURI: blockIconURI,
             blocks: [
+                {
+                    opcode: "whenCollide",
+                    blockType: BlockType.HAT,
+                    text: "when I collide with [sprite]",
+                    isEdgeActivated: false,
+                    arguments: {
+                        sprite: {
+                            type: ArgumentType.STRING,
+                            menu: "SpriteMenu",
+                            defaultValue: "any",
+                        },
+                    },
+                },
+
                 {
                     opcode: "setPhysics",
                     blockType: BlockType.COMMAND,
@@ -653,6 +668,8 @@ class Scratch3Physics {
             ],
 
             menus: {
+                SpriteMenu: this.SPRITE_MENU,
+
                 SpaceTypes: this.SPACE_TYPE_MENU,
                 WhereTypes: this.WHERE_TYPE_MENU,
                 ShapeTypes: this.SHAPE_TYPE_MENU,
@@ -673,6 +690,14 @@ class Scratch3Physics {
             { text: "on stage", value: SPACE_TYPE_OPTIONS.STAGE },
             { text: "relative", value: SPACE_TYPE_OPTIONS.RELATIVE },
         ];
+    }
+    get SPRITE_MENU() {
+        const targets = this.runtime.targets;
+        const options = targets
+            .filter((t) => !t.isStage)
+            .map((t) => ({ text: t.sprite.name, value: t.sprite.name }));
+        options.unshift({ text: "any", value: "any" });
+        return options;
     }
 
     get WHERE_TYPE_MENU() {
@@ -794,11 +819,13 @@ class Scratch3Physics {
             };
 
             if (!body.allowScreenwrap && body.isStatic) {
-                console.log("target", target);
-                const hasConvexHullPoints = 
-                target.renderer._allDrawables[target.drawableID].convexHullPoints &&
-                target.renderer._allDrawables[target.drawableID].convexHullPoints.length > 1 &&
-                target.renderer._allDrawables[target.drawableID].convexHullPoints[0];
+                const hasConvexHullPoints =
+                    target.renderer._allDrawables[target.drawableID]
+                        .convexHullPoints &&
+                    target.renderer._allDrawables[target.drawableID]
+                        .convexHullPoints.length > 1 &&
+                    target.renderer._allDrawables[target.drawableID]
+                        .convexHullPoints[0];
                 if (!hasConvexHullPoints) {
                     target.updateAllDrawableProperties();
                     const size = target.size;
@@ -869,6 +896,7 @@ class Scratch3Physics {
                 }
             }
         }
+        this.contactListener.finalizeCollisions();
     }
 
     _checkMoved() {
@@ -890,8 +918,9 @@ class Scratch3Physics {
                 (target.physicsCostumeName !== "hitbox" &&
                     target.physicsCostumeName !==
                         target.getCurrentCostume().name) ||
-                target.size !== target.physicsSize || !body ||
-                body.isStatic 
+                target.size !== target.physicsSize ||
+                !body ||
+                body.isStatic
             ) {
                 const cachedVelocity = body.GetLinearVelocity();
                 body = this.setPhysicsFor(target);
@@ -1092,11 +1121,11 @@ class Scratch3Physics {
 
         const hullPoints = [];
         for (const i in points) {
-            if (!points[i] || points[i].length < 2 ) {
-                if (bodies[target.id]){
+            if (!points[i] || points[i].length < 2) {
+                if (bodies[target.id]) {
                     return bodies[target.id];
                 } else {
-                    return null
+                    return null;
                 }
             } else {
                 hullPoints.push({
@@ -1476,6 +1505,9 @@ class Scratch3Physics {
                     isHidden: body.isHidden,
                 });
                 const b = bodies[target.id];
+                if (!b) {
+                    return;
+                }
                 b.SetPosition(body.position);
                 b.SetAngle(body.angle);
                 b.SetLinearVelocity(body.linearVelocity);
@@ -1560,119 +1592,112 @@ class MyContactFilter extends Box2D.Dynamics.b2ContactFilter {
         }
         return super.ShouldCollide(fixtureA, fixtureB);
     }
+
+    whenCollide(args, util) {
+        const target = util.target;
+        const otherName = args.sprite;
+
+        const { TARGET, OTHER } = util.stackFrame;
+        if (TARGET !== target.id) return false;
+
+        if (otherName === "any") return true;
+
+        const otherTarget = this.runtime.getTargetById(OTHER);
+        return otherTarget && otherTarget.sprite.name === otherName;
+    }
 }
 
 class MyContactListener extends Box2D.Dynamics.b2ContactListener {
+    constructor(runtime) {
+        super();
+        this.runtime = runtime;
+        this.frameCollisions = new Set(); // collisions found this frame
+        this.activeCollisions = new Set(); // collisions currently active
+    }
+
+    _getPairKey(idA, idB) {
+        return idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+    }
+
+    // Called during physics step; store active collisions found this frame
+    BeginContact(contact) {
+        const bodyA = contact.GetFixtureA().GetBody();
+        const bodyB = contact.GetFixtureB().GetBody();
+        if (!bodyA || !bodyB) return;
+
+        const idA = bodyA.targetId;
+        const idB = bodyB.targetId;
+        if (!idA || !idB) return;
+
+        const key = this._getPairKey(idA, idB);
+        this.frameCollisions.add(key);
+    }
+
+    // Should be called once per frame after Step()
+    finalizeCollisions() {
+        // Add newly detected collisions
+        for (const key of this.frameCollisions) {
+            if (!this.activeCollisions.has(key)) {
+                this.activeCollisions.add(key);
+
+                const [idA, idB] = key.split("|");
+                const targetA = this.runtime.getTargetById(idA);
+                const targetB = this.runtime.getTargetById(idB);
+                if (!targetA || !targetB) continue;
+
+                if (this.runtime.triggerCollisionSound) {
+                    this.runtime.triggerCollisionSound(targetA, targetB);
+                }
+
+                this.runtime.startHats("physics_whenCollide", {
+                    TARGET: targetA.id,
+                    OTHER: targetB.id,
+                });
+                this.runtime.startHats("physics_whenCollide", {
+                    TARGET: targetB.id,
+                    OTHER: targetA.id,
+                });
+            }
+        }
+
+        // Remove collisions no longer present
+        for (const key of this.activeCollisions) {
+            if (!this.frameCollisions.has(key)) {
+                this.activeCollisions.delete(key);
+            }
+        }
+
+        // Clear for next frame
+        this.frameCollisions.clear();
+    }
+
     PostSolve(contact, impulse) {
-        const fixtureA = contact.GetFixtureA();
-        const fixtureB = contact.GetFixtureB();
-        const bodyA = fixtureA.GetBody();
-        const bodyB = fixtureB.GetBody();
+        const bodyA = contact.GetFixtureA().GetBody();
+        const bodyB = contact.GetFixtureB().GetBody();
+        if (!bodyA || !bodyB) return;
+
         const worldManifold = new Box2D.Collision.b2WorldManifold();
-
-        // This populates worldManifold with the correct contact points and normal
         contact.GetWorldManifold(worldManifold);
+        const normal = worldManifold.m_normal;
 
-        // Get the normal vector from the contact
-        const normal = worldManifold.m_normal; // This is a b2Vec2
-
-        // Determine if one of the bodies is a kicker
         if (bodyA.kickStrength > 0) {
-            const kickDirection = new Box2D.Common.Math.b2Vec2(
-                normal.x,
-                normal.y
-            );
-            this.applyKick(bodyB, bodyA.kickStrength, kickDirection);
+            const kickDir = new Box2D.Common.Math.b2Vec2(normal.x, normal.y);
+            this.applyKick(bodyB, bodyA.kickStrength, kickDir);
         }
         if (bodyB.kickStrength > 0) {
-            // For bodyB, the kick direction should be opposite
-            const kickDirection = new Box2D.Common.Math.b2Vec2(
-                -normal.x,
-                -normal.y
-            );
-            this.applyKick(bodyA, bodyB.kickStrength, kickDirection);
-        }
-
-        const velocityA = bodyA.GetLinearVelocity();
-        const velocityB = bodyB.GetLinearVelocity();
-        const massA = bodyA.GetMass();
-        const massB = bodyB.GetMass();
-        const positionA = bodyA.GetPosition();
-        const positionB = bodyB.GetPosition();
-        const massRatio = 1;
-        if (velocityA.x === 0 && velocityA.y === 0) {
-            let previousPosition = scratchPositionToBox2DPosition(
-                prevPos[bodyA.targetId]
-            );
-            if (previousPosition) {
-                const delta = {
-                    x: positionA.x - previousPosition.x,
-                    y: positionA.y - previousPosition.y,
-                };
-                const deltaMagnitude = Math.sqrt(
-                    delta.x * delta.x + delta.y * delta.y
-                );
-                if (deltaMagnitude > 0.2) {
-                    delta.x = (delta.x / deltaMagnitude) * 0.2;
-                    delta.y = (delta.y / deltaMagnitude) * 0.2;
-                }
-
-                const newVelocity = {
-                    x: delta.x * massRatio + velocityB.x,
-                    y: delta.y * massRatio + velocityB.y,
-                };
-                bodyB.SetLinearVelocity(
-                    new Box2D.Common.Math.b2Vec2(newVelocity.x, newVelocity.y)
-                );
-            }
-        }
-        if (velocityB.x === 0 && velocityB.y === 0) {
-            const previousPosition = scratchPositionToBox2DPosition(
-                prevPos[bodyB.targetId]
-            );
-            if (previousPosition) {
-                const delta = {
-                    x: positionB.x - previousPosition.x,
-                    y: positionB.y - previousPosition.y,
-                };
-                const deltaMagnitude = Math.sqrt(
-                    delta.x * delta.x + delta.y * delta.y
-                );
-                if (deltaMagnitude > 0.2) {
-                    delta.x = (delta.x / deltaMagnitude) * 0.2;
-                    delta.y = (delta.y / deltaMagnitude) * 0.2;
-                }
-
-                const newVelocity = {
-                    x: delta.x * massRatio + velocityA.x,
-                    y: delta.y * massRatio + velocityA.y,
-                };
-                bodyA.SetLinearVelocity(
-                    new Box2D.Common.Math.b2Vec2(newVelocity.x, newVelocity.y)
-                );
-            }
+            const kickDir = new Box2D.Common.Math.b2Vec2(-normal.x, -normal.y);
+            this.applyKick(bodyA, bodyB.kickStrength, kickDir);
         }
     }
 
-    applyKick(body, kickStrength, kickDirection) {
-        // Ensure the direction is a unit vector
-        kickDirection.Normalize();
-
-        // Scale the direction by the strength of the kick
-        const kickVelocity = new Box2D.Common.Math.b2Vec2(
-            kickDirection.x * kickStrength,
-            kickDirection.y * kickStrength
+    applyKick(body, strength, direction) {
+        direction.Normalize();
+        const vel = body.GetLinearVelocity();
+        const newVel = new Box2D.Common.Math.b2Vec2(
+            vel.x + direction.x * strength,
+            vel.y + direction.y * strength
         );
-
-        // Add this velocity to the current body's velocity
-        const currentVelocity = body.GetLinearVelocity();
-        const newVelocity = new Box2D.Common.Math.b2Vec2(
-            currentVelocity.x + kickVelocity.x,
-            currentVelocity.y + kickVelocity.y
-        );
-
-        // Apply the new velocity to the body
-        body.SetLinearVelocity(newVelocity);
+        body.SetLinearVelocity(newVel);
     }
 }
 
