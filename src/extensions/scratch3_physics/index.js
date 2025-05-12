@@ -1044,9 +1044,9 @@ class Scratch3Physics {
         let isWall = false,
             kickStrength = 0,
             isStatic = false,
-            allowScreenwrap = false,
-            friction = 1,
-            isHidden = false;
+            allowScreenwrap = false;
+        friction = 1;
+        isHidden = false;
         if (props) {
             if (props.isWall === "wall" || props.isWall === true) {
                 props.isWall = true;
@@ -1121,12 +1121,11 @@ class Scratch3Physics {
 
         const hullPoints = [];
         for (const i in points) {
-            if (!points[i] || points[i].length < 3) {
+            if (!points[i] || points[i].length < 2) {
                 if (bodies[target.id]) {
                     return bodies[target.id];
                 } else {
-                    fixDef.shape = new b2PolygonShape();
-                    fixDef.shape.SetAsBox(0.5 / zoom, 0.5 / zoom);
+                    return null;
                 }
             } else {
                 hullPoints.push({
@@ -1304,18 +1303,7 @@ class Scratch3Physics {
 
         return body.isStatic;
     }
-    whenCollide(args, util) {
-        const target = util.target;
-        const otherName = args.sprite;
 
-        const { TARGET, OTHER } = util.stackFrame;
-        if (TARGET !== target.id) return false;
-
-        if (otherName === "any") return true;
-
-        const otherTarget = this.runtime.getTargetById(OTHER);
-        return otherTarget && otherTarget.sprite.name === otherName;
-    }
     getIsWall(args, util) {
         const body = bodies[util.target.id];
         if (!body) {
@@ -1603,6 +1591,19 @@ class MyContactFilter extends Box2D.Dynamics.b2ContactFilter {
             return false;
         }
         return super.ShouldCollide(fixtureA, fixtureB);
+    }
+
+    whenCollide(args, util) {
+        const target = util.target;
+        const otherName = args.sprite;
+
+        const { TARGET, OTHER } = util.stackFrame;
+        if (TARGET !== target.id) return false;
+
+        if (otherName === "any") return true;
+
+        const otherTarget = this.runtime.getTargetById(OTHER);
+        return otherTarget && otherTarget.sprite.name === otherName;
     }
 }
 
