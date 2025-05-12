@@ -1026,7 +1026,6 @@ class Scratch3Physics {
     }
 
     setCollisionFilter(target, type) {
-        console.log("setCollisionFilter", target.id, type);
         let body = bodies[target.id];
         if (!body) {
             body = this.setPhysicsFor(target); // Ensure the body exists
@@ -1087,7 +1086,6 @@ class Scratch3Physics {
         } else {
             isHidden = false;
         }
-        console.log("isHidden", isHidden);
         const drawable = r._allDrawables[target.drawableID];
 
         // Check for a 'hitbox' costume
