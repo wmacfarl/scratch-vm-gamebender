@@ -22,6 +22,7 @@ const RenderedTarget = require("../../sprites/rendered-target");
 const formatMessage = require("format-message");
 
 const Box2D = require("./box2d_es6");
+const { is } = require("immutable");
 
 const b2World = Box2D.Dynamics.b2World;
 const b2Vec2 = Box2D.Common.Math.b2Vec2;
@@ -1025,6 +1026,7 @@ class Scratch3Physics {
     }
 
     setCollisionFilter(target, type) {
+        console.log("setCollisionFilter", target.id, type);
         let body = bodies[target.id];
         if (!body) {
             body = this.setPhysicsFor(target); // Ensure the body exists
@@ -1085,6 +1087,7 @@ class Scratch3Physics {
         } else {
             isHidden = false;
         }
+        console.log("isHidden", isHidden);
         const drawable = r._allDrawables[target.drawableID];
 
         // Check for a 'hitbox' costume
@@ -1152,6 +1155,7 @@ class Scratch3Physics {
             body.SetType(b2Body.b2_dynamicBody);
             body.isStatic = false;
         }
+        body.isWall = isWall;
         this.setCollisionFilter(target, isWall ? "wall" : "not wall");
         body.SetLinearDamping(LINEAR_DAMPING);
         body.SetAngularDamping(ANGULAR_DAMPING);
@@ -1420,7 +1424,18 @@ class Scratch3Physics {
         const pos = new b2Vec2(target.x / zoom, target.y / zoom);
         body.SetPositionAndAngle(pos, (90 - target.direction) * toRad);
     }
+    whenCollide(args, util) {
+        const target = util.target;
+        const otherName = args.sprite;
 
+        const { TARGET, OTHER } = util.stackFrame;
+        if (TARGET !== target.id) return false;
+
+        if (otherName === "any") return true;
+
+        const otherTarget = this.runtime.getTargetById(OTHER);
+        return otherTarget && otherTarget.sprite.name === otherName;
+    }
     getTouching(args, util) {
         const target = util.target;
         const body = bodies[target.id];
@@ -1591,19 +1606,6 @@ class MyContactFilter extends Box2D.Dynamics.b2ContactFilter {
             return false;
         }
         return super.ShouldCollide(fixtureA, fixtureB);
-    }
-
-    whenCollide(args, util) {
-        const target = util.target;
-        const otherName = args.sprite;
-
-        const { TARGET, OTHER } = util.stackFrame;
-        if (TARGET !== target.id) return false;
-
-        if (otherName === "any") return true;
-
-        const otherTarget = this.runtime.getTargetById(OTHER);
-        return otherTarget && otherTarget.sprite.name === otherName;
     }
 }
 
